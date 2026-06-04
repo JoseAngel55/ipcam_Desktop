@@ -2,8 +2,6 @@ import asyncio
 import json
 import websockets
 
-# Diccionario de clientes conectados
-# { websocket: { "role": "camera", "name": "Android-Cam" } }
 connected_clients = {}
 
 async def handle_client(websocket):
@@ -20,16 +18,18 @@ async def handle_client(websocket):
     except websockets.exceptions.ConnectionClosedError:
         print(f"[-] Conexión cerrada con error: {websocket.remote_address}")
     finally:
-        # Limpiar cliente desconectado
         client_info = connected_clients.pop(websocket, {})
         name = client_info.get("name", "desconocido")
         print(f"[-] Cliente desconectado: {name}")
+        await broadcast({
+            "type": "camera_disconnected",
+            "name": name,
+        }, exclude=websocket)
 
 
 async def process_message(websocket, message):
     msg_type = message.get("type")
 
-    # El dispositivo se registra e indica su rol y nombre
     if msg_type == "register":
         connected_clients[websocket] = {
             "role": message.get("role"),
@@ -38,16 +38,24 @@ async def process_message(websocket, message):
         name = connected_clients[websocket]["name"]
         print(f"[*] Registrado: {name}")
 
-        # Confirmar registro al dispositivo
         await websocket.send(json.dumps({
             "type": "registered",
             "message": f"Bienvenido {name}",
         }))
 
-        # Notificar a todos los demás clientes
         await broadcast({
             "type": "camera_connected",
             "name": name,
+        }, exclude=websocket)
+
+    # Mensajes WebRTC — se reenvían al resto de clientes
+    elif msg_type in ["offer", "answer", "ice_candidate"]:
+        name = connected_clients[websocket].get("name", "desconocido")
+        print(f"[*] Reenviando '{msg_type}' de {name}")
+
+        await broadcast({
+            **message,
+            "from": name,
         }, exclude=websocket)
 
     else:
@@ -67,4 +75,4 @@ async def start_server(host="0.0.0.0", port=8765):
     print(f"[*] Servidor iniciado en {host}:{port}")
     print(f"[*] Esperando conexiones...")
     async with websockets.serve(handle_client, host, port):
-        await asyncio.Future()  # Corre indefinidamente
+        await asyncio.Future()
