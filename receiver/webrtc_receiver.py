@@ -14,8 +14,7 @@ class CameraReceiver:
         self.server_ip = server_ip
         self.server_port = server_port
         self.websocket = None
-        self.peer_connections = {}
-        self.vcam_manager = vcam_manager
+        self.camera_name = None
 
     # ─── Conexión al signaling server ────────────────────────────
 
@@ -56,30 +55,23 @@ class CameraReceiver:
                 await self._handle_offer(camera_name, message)
 
             elif msg_type == "ice_candidate":
-                await self._handle_ice_candidate(
-                    message.get("from"), message
-                )
+                await self._handle_ice_candidate(message)
 
             elif msg_type == "camera_disconnected":
                 camera_name = message.get("name")
                 print(f"[Receptor] Cámara desconectada: {camera_name}")
                 await self._close_connection(camera_name)
 
-    # ─── Handshake WebRTC ────────────────────────────────────────
+    # ─── Handshake WebRTC por cámara ─────────────────────────────
 
-    async def _handle_offer(self, camera_name, message):
-        await self._close_connection(camera_name)
+    async def _handle_offer(self, message):
+        self.pc = RTCPeerConnection()
 
-        pc = RTCPeerConnection()
-        self.peer_connections[camera_name] = pc
-
-        @pc.on("track")
+        @self.pc.on("track")
         async def on_track(track):
             if track.kind == "video":
-                print(f"[Receptor] Video de: {camera_name}")
-                asyncio.ensure_future(
-                    self._receive_video(track, camera_name)
-                )
+                print("[Receptor] Track de video recibido")
+                asyncio.ensure_future(self._receive_video(track))
             elif track.kind == "audio":
                 print(f"[Receptor] Audio de: {camera_name}")
 
@@ -96,6 +88,8 @@ class CameraReceiver:
         answer = await pc.createAnswer()
         await pc.setLocalDescription(answer)
 
+        # El answer lleva el target para que el servidor
+        # sepa a qué cámara reenviarlo
         await self._send({
             "type": "answer",
             "sdp": pc.localDescription.sdp,
@@ -120,22 +114,7 @@ class CameraReceiver:
             candidate.sdpMLineIndex = message.get("sdpMLineIndex")
             await pc.addIceCandidate(candidate)
         except Exception as e:
-            print(f"[Receptor] Error ICE {camera_name}: {e}")
-
-    async def _close_connection(self, camera_name):
-        pc = self.peer_connections.pop(camera_name, None)
-        if pc:
-            await pc.close()
-
-        if self.vcam_manager:
-            self.vcam_manager.release_camera(camera_name)
-
-        try:
-            cv2.destroyWindow(f"IPCam - {camera_name}")
-        except Exception:
-            pass
-
-        print(f"[Receptor] Conexión cerrada: {camera_name}")
+            print(f"[Receptor] Error ICE candidate: {e}")
 
     # ─── Recepción y display de video ────────────────────────────
 
