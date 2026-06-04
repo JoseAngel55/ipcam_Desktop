@@ -3,6 +3,7 @@ import platform
 from signaling.server import start_server
 from receiver.webrtc_receiver import CameraReceiver
 from virtual_camera.v4l2_camera import VirtualCameraManager
+from discovery.scanner import start_discovery_listener
 
 
 def print_requirements():
@@ -39,6 +40,7 @@ async def main():
         await asyncio.gather(
             start_server(),
             start_receiver(vcam_manager),
+            start_discovery_listener(),
         )
     finally:
         if vcam_manager:
