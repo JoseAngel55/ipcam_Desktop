@@ -20,51 +20,71 @@ async def handle_client(websocket):
     finally:
         client_info = connected_clients.pop(websocket, {})
         name = client_info.get("name", "desconocido")
-        print(f"[-] Cliente desconectado: {name}")
-        await broadcast({
-            "type": "camera_disconnected",
-            "name": name,
-        }, exclude=websocket)
+        role = client_info.get("role", "desconocido")
+        print(f"[-] Cliente desconectado: {name} ({role})")
+
+        if role == "camera":
+            await broadcast_to_role("receiver", {
+                "type": "camera_disconnected",
+                "name": name,
+            })
 
 
 async def process_message(websocket, message):
     msg_type = message.get("type")
 
     if msg_type == "register":
-        connected_clients[websocket] = {
-            "role": message.get("role"),
-            "name": message.get("name", "sin-nombre"),
-        }
-        name = connected_clients[websocket]["name"]
-        print(f"[*] Registrado: {name}")
+        name = message.get("name", "sin-nombre")
+        role = message.get("role")
+        connected_clients[websocket] = {"role": role, "name": name}
+        print(f"[*] Registrado: {name} ({role})")
 
         await websocket.send(json.dumps({
             "type": "registered",
             "message": f"Bienvenido {name}",
         }))
 
-        await broadcast({
-            "type": "camera_connected",
-            "name": name,
+        # Si es una cámara, avisar a todos los receptores
+        if role == "camera":
+            await broadcast_to_role("receiver", {
+                "type": "camera_connected",
+                "name": name,
+            })
+
+    elif msg_type in ["offer", "ice_candidate"]:
+        # Cámara → receptor: reenviar a todos los receptores
+        sender = connected_clients[websocket].get("name", "desconocido")
+        print(f"[*] Reenviando '{msg_type}' de {sender}")
+        await broadcast_to_role("receiver", {
+            **message,
+            "from": sender,
         }, exclude=websocket)
 
-    # Mensajes WebRTC — se reenvían al resto de clientes
-    elif msg_type in ["offer", "answer", "ice_candidate"]:
-        name = connected_clients[websocket].get("name", "desconocido")
-        print(f"[*] Reenviando '{msg_type}' de {name}")
-
-        await broadcast({
+    elif msg_type == "answer":
+        # Receptor → cámara específica: reenviar solo a la cámara indicada
+        target_name = message.get("target")
+        print(f"[*] Reenviando 'answer' al objetivo: {target_name}")
+        await send_to_name(target_name, {
             **message,
-            "from": name,
+            "from": connected_clients[websocket].get("name"),
         }, exclude=websocket)
 
     else:
         print(f"[?] Mensaje desconocido: {msg_type}")
 
 
-async def broadcast(message, exclude=None):
-    for client in list(connected_clients.keys()):
-        if client != exclude:
+async def broadcast_to_role(role, message, exclude=None):
+    for client, info in list(connected_clients.items()):
+        if info.get("role") == role and client != exclude:
+            try:
+                await client.send(json.dumps(message))
+            except Exception:
+                pass
+
+
+async def send_to_name(name, message, exclude=None):
+    for client, info in list(connected_clients.items()):
+        if info.get("name") == name and client != exclude:
             try:
                 await client.send(json.dumps(message))
             except Exception:
